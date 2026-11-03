@@ -1,0 +1,68 @@
+name: refresh board
+
+on:
+  schedule:
+    - cron: "17,37,57 * * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch the published site (rolling state lives there)
+        run: |
+          git fetch origin gh-pages --depth=1 || true
+          mkdir -p pub
+          if git rev-parse --verify -q origin/gh-pages >/dev/null; then
+            git --work-tree=pub checkout origin/gh-pages -- . && git reset -q
+          fi
+          ls -la pub
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -q requests
+
+      - name: Refresh
+        run: python -m edge.refresh --data pub
+
+      - name: Publish
+        run: |
+          cp site/index.html pub/index.html
+          cp site/manifest.webmanifest pub/ 2>/dev/null || true
+          touch pub/.nojekyll
+          cd pub
+          git init -q -b gh-pages
+          git config user.name "soccer-edge bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -q -m "board $(date -u +%FT%TZ)"
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" gh-pages
+
+      # GitHub's cron can lag for hours on new repos. While no scheduled run has happened in the last hour,
+      # wait out the interval and start the next run ourselves; once the schedule fires, this stops.
+      - name: Keep the cycle going if the scheduler is late
+        if: always() && github.event_name != 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          last=$(gh run list -R "${{ github.repository }}" -w "refresh board" -e schedule -L 1 --json createdAt --jq '.[0].createdAt // ""')
+          if [ -n "$last" ] && [ $(( $(date +%s) - $(date -d "$last" +%s) )) -lt 3600 ]; then
+            echo "schedule is firing ($last); not chaining"; exit 0
+          fi
+          sleep 900
+          gh workflow run refresh.yml -R "${{ github.repository }}" --ref main

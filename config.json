@@ -1,0 +1,32 @@
+{
+  "bankroll": 1000,
+  "unit_pct": 0.01,
+  "kelly_frac": 0.25,
+  "max_units": 3.0,
+  "min_units": 0.25,
+  "blend": {
+    "model": 1.0,
+    "market": 50.0,
+    "kalshi": 10.0
+  },
+  "temperature_market": 1.0,
+  "temperature_model": 1.0,
+  "horizon_hours": 44,
+  "strategies": {
+    "kalshi_value": {
+      "label": "Kalshi below fair (paper)",
+      "min_ev": 0.03,
+      "min_price": 0.15,
+      "max_price": 0.88,
+      "max_hours": 30,
+      "kelly_mult": 0.5,
+      "proven": false
+    },
+    "best_value": {
+      "label": "Best bet rated Value (paper)",
+      "kelly_mult": 0.5,
+      "proven": false
+    }
+  },
+  "btts_market_w": 0.9
+}
