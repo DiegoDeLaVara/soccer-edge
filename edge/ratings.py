@@ -27,6 +27,7 @@ class Ratings:
         self.names = st.get("names", {})
         self.leagues = st.get("leagues", {})        # ESPN league id -> [slug, name]
         self.ht = st.get("ht", {})                  # league slug -> share of goals in the first half
+        self.h2h = st.get("h2h", {})                # "lo|hi" team ids -> meetings since 2012 (wins from lo's side)
 
     def lambdas(self, h, a, lg, neutral=False):
         m = self.mu.get(lg, 0.27)
@@ -54,15 +55,36 @@ class Ratings:
             self.n[t] = self.n.get(t, 0) + 1
             res = "W" if gf > ga else "D" if gf == ga else "L"
             self.form[t] = (self.form.get(t, []) + [[m.get("date", ""), opp, ha, f"{gf}-{ga}", res]])[-FORM_N:]
+        lo, hi = sorted((h, a), key=str)
+        r = self.h2h.setdefault(f"{lo}|{hi}", {"n": 0, "w": 0, "d": 0, "l": 0, "g": 0, "btts": 0, "o25": 0, "last": []})
+        glo, ghi = (m["hg"], m["ag"]) if lo == h else (m["ag"], m["hg"])
+        r["n"] += 1
+        r["w" if glo > ghi else "d" if glo == ghi else "l"] += 1
+        r["g"] += m["hg"] + m["ag"]
+        r["btts"] += int(m["hg"] > 0 and m["ag"] > 0)
+        r["o25"] += int(m["hg"] + m["ag"] > 2)
+        r["last"] = [[m.get("date", ""), m.get("hn", ""), f"{m['hg']}-{m['ag']}", m.get("an", "")]] + r["last"][:4]
         if m.get("hn"):
             self.names[h] = m["hn"]
         if m.get("an"):
             self.names[a] = m["an"]
 
+    def meetings(self, h, a):
+        """Head to head from the home team's side, in the page's format (None if they have not met since 2012)."""
+        lo, hi = sorted((h, a), key=str)
+        r = self.h2h.get(f"{lo}|{hi}")
+        if not r or not r["n"]:
+            return None
+        w, l = (r["w"], r["l"]) if lo == h else (r["l"], r["w"])
+        n = r["n"]
+        return {"n": n, "w": w, "d": r["d"], "l": l, "gpg": round(r["g"] / n, 2), "btts": round(100 * r["btts"] / n),
+                "o25": round(100 * r["o25"] / n), "last": r["last"]}
+
     def dump(self, r=5):
         q = lambda d: {k: round(v, r) for k, v in d.items()}
         return {"att": q(self.att), "de": q(self.de), "n": self.n, "mu": q(self.mu), "home": q(self.home),
-                "rho": self.rho, "form": self.form, "names": self.names, "leagues": self.leagues, "ht": self.ht}
+                "rho": self.rho, "form": self.form, "names": self.names, "leagues": self.leagues, "ht": self.ht,
+                "h2h": self.h2h}
 
 
 def load(path):

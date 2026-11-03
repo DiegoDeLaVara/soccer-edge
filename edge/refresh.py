@@ -423,6 +423,8 @@ def run(data, cfg, verbose=True):
     notes = []
     f = data / "ratings.json.gz"
     R, st = load(f if f.exists() else ROOT / "state" / "ratings.json.gz")
+    if not R.h2h and f.exists():       # rolling state from before head-to-head existed: take it from the repo's build
+        R.h2h = load(ROOT / "state" / "ratings.json.gz")[0].h2h
     seen_list = list(st.get("seen", []))
     seen = set(seen_list)
     lf = data / "log.json"
@@ -526,6 +528,9 @@ def run(data, cfg, verbose=True):
             out["mo"] = {"dk": [], "ln": {s: [amer(dec(v[0])) if dec(v[0]) else None, amer(dec(v[1])) if dec(v[1]) else None]
                                           for s, v in mv.items()} if mv else None,
                          "ks": kx if kx and len(kx) == 3 else None, "pm": None}
+        hh = R.meetings(g["hid"], g["aid"])
+        if hh:
+            out["h2h"] = hh
         out["form"] = {side: {"f": "".join(x[4] for x in R.form.get(tid, [])[-5:]),
                               "last": [[x[0][5:], x[1], x[2], x[3], x[4]] for x in reversed(R.form.get(tid, [])[-5:])], "v": None}
                        for side, tid in (("home", g["hid"]), ("away", g["aid"]))}
