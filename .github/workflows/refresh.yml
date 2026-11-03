@@ -51,7 +51,7 @@ jobs:
           git config user.email "actions@users.noreply.github.com"
           git add -A
           git commit -q -m "board $(date -u +%FT%TZ)"
-          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" gh-pages
+          for i in 1 2 3 4; do git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" gh-pages && break; echo "push failed, retrying"; sleep $((i * 15)); done
 
       # GitHub's cron can lag for hours on new repos. While no scheduled run has happened in the last hour,
       # wait out the interval and start the next run ourselves; once the schedule fires, this stops.
