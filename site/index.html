@@ -172,6 +172,14 @@ ul.facts { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 14
 .record { margin-top: 26px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: grid; gap: 10px; }
 .record h2 { font: 600 17px var(--display); text-transform: uppercase; letter-spacing: .04em; margin: 0; }
 .empty { text-align: center; color: var(--muted); padding: 40px 0; }
+.padd { font: 13px var(--body); color: var(--ink); background: var(--chip); border: 0; border-radius: 999px; padding: 4px 10px; cursor: pointer; }
+.padd.on { background: var(--home); color: var(--surface); }
+.padd.on .note { color: inherit; opacity: .85; }
+#pbar { position: fixed; left: 50%; transform: translateX(-50%); bottom: max(12px, env(safe-area-inset-bottom, 0px)); z-index: 6; background: var(--ink); color: var(--bg); border: 0; border-radius: 999px; padding: 10px 16px; font: 600 14px var(--body); box-shadow: 0 4px 14px rgba(0,0,0,.25); cursor: pointer; white-space: nowrap; max-width: calc(100vw - 32px); overflow: hidden; text-overflow: ellipsis; }
+.pk2 td { vertical-align: top; }
+.prem { border: 0; background: none; color: var(--muted); font-size: 18px; cursor: pointer; padding: 0 4px; }
+.updated { white-space: normal; text-align: right; min-width: 0; }
+.weak { color: var(--alert); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; }
 @media (prefers-reduced-motion: no-preference) { .detail { animation: open .18s ease-out; } @keyframes open { from { opacity: .3; transform: translateY(-3px); } } }
 </style>
 
@@ -188,6 +196,7 @@ ul.facts { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 14
       <button data-f="sig" aria-pressed="false">⚑ Signals</button>
       <button data-f="big" aria-pressed="false">Big leagues</button>
       <button data-f="live" aria-pressed="false">Live &amp; done</button>
+      <button data-f="parlay" aria-pressed="false">🧾 Parlay</button>
     </div>
     <input id="q" type="search" placeholder="Team or league" aria-label="Search team or league">
   </div>
@@ -198,6 +207,7 @@ ul.facts { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 14
   <div id="board"></div>
   <div class="record" id="record"></div>
 </main>
+<button id="pbar" hidden></button>
 
 <script>document.write('<script src="data.js?t=' + Math.floor(Date.now() / 60000) + '"><\/script>')</script>
 <script type="application/json" id="data">null</script>
@@ -225,7 +235,7 @@ function renderHead() {
   $("days").innerHTML = days.map((d, i) => `<button data-d="${d}" aria-pressed="${d === state.day}">${dayLabel(d)} <span class="note">${D.days[d].length}</span></button>`).join("");
   const age = (Date.now() / 1000 - D.generated) / 3600;
   $("updated").textContent = "Updated " + new Date(D.generated * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }) + (state.relay ? " · " + state.relay : "")
-    + (age > 3 ? ` · ⚠ ${Math.round(age)} h old: the PC is asleep or the app is off` : "");
+    + (age > 3 ? ` · ⚠ ${Math.round(age)} h old: ${D.cloud ? "the cloud update is late" : "the PC is asleep or the app is off"}` : "");
 }
 
 // the side most signals point to: [label, count], or null when they split evenly
@@ -350,6 +360,80 @@ function goodCombosHtml(all) {
     ${sameHtml ? `<h2 style="font-size:15px">Same game: legs that go together</h2><section class="league"><div class="games">${sameHtml}</div></section>` : ""}
     ${pairHtml ? `<h2 style="font-size:15px">Two games: pair two best bets</h2><section class="league"><div class="games">${pairHtml}</div></section>` : ""}</div>`;
 }
+// ---- parlay builder: legs across games multiply; legs from the same game are priced together from its score grid
+const PLEGS = [["H", "{h} to win"], ["D", "Draw"], ["A", "{a} to win"], ["1X", "{h} or draw"], ["X2", "{a} or draw"], ["12", "No draw"],
+               ["o15", "Over 1.5"], ["o25", "Over 2.5"], ["u25", "Under 2.5"], ["u35", "Under 3.5"], ["by", "Both teams score"], ["bn", "Not both score"]];
+const PNAME = Object.fromEntries(PLEGS);
+let parlay = store.get("sp_parlay", []);
+const savePar = () => { store.set("sp_parlay", parlay); render(); };
+const gameById = id => Object.values(D.days).flat().find(g => g.id === id);
+const legName = (g, k) => (PNAME[k] || k).replace("{h}", g.h).replace("{a}", g.a);
+function legP(g, k) {
+  const p = g.p, fixed = { H: p.H, D: p.D, A: p.A, "1X": p.H + p.D, X2: p.A + p.D, "12": p.H + p.A };
+  return k in fixed ? fixed[k] : prob(grid(g), [LEGMAP[k][2]]);
+}
+// Kalshi price to buy the leg: YES ask for a result, NO on the other side (1 - its bid) for double chance
+function legKalshi(g, k) {
+  const s = (g.ka || {}).s || {}, ask = x => (s[x] || [])[1], no = x => (s[x] || [])[0] != null ? 1 - s[x][0] : null;
+  return { H: ask("home"), D: ask("draw"), A: ask("away"), "1X": no("away"), X2: no("home"), "12": no("draw") }[k] ?? null;
+}
+function parlayStats() {
+  const legs = parlay.map((x, i) => ({ ...x, i, g: gameById(x.id) })).filter(x => x.g && x.g.p);
+  const games = {};
+  legs.forEach(x => (games[x.id] = games[x.id] || []).push(x));
+  let p = 1, kal = 1, kalAll = true;
+  Object.values(games).forEach(ls => {
+    const g = ls[0].g;
+    p *= ls.length === 1 ? legP(g, ls[0].k) : prob(grid(g), ls.map(x => LEGMAP[x.k][2]));
+    if (ls.length > 1) kalAll = false;            // same-game legs need a Kalshi combo quote, not singles
+    ls.forEach(x => { const c = legKalshi(g, x.k); if (c == null) kalAll = false; else kal *= c + kfee(c); });
+  });
+  return { legs, p, kal: kalAll && legs.length ? kal : null, sameGame: Object.values(games).some(ls => ls.length > 1) };
+}
+function parlayAddHtml(g) {
+  if (!g.p || g.p.xh == null || g.done || LIVE(g.st)) return "";
+  return `<div><h3>Add to parlay</h3><div class="legs">${PLEGS.map(([k]) => {
+    const on = parlay.some(x => x.id === g.id && x.k === k);
+    return `<button class="padd${on ? " on" : ""}" data-padd="${k}" data-id="${g.id}">${on ? "✓" : "+"} ${esc(legName(g, k))} <span class="note">${pct(legP(g, k))}</span></button>`;
+  }).join("")}</div></div>`;
+}
+function parlayHtml() {
+  const S = parlayStats();
+  if (!S.legs.length) return `<div class="topnote"><b>Build a parlay:</b> open any game and tap a <b>+</b> under "Add to parlay" (win, draw, double chance, totals, both teams score). Legs from different games multiply; legs from the same game are priced together from that game's score grid, so related legs aren't double counted.</div>`;
+  const t = g => new Date(g.ts * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+  const weakest = S.legs.reduce((m, x) => legP(x.g, x.k) < legP(m.g, m.k) ? x : m, S.legs[0]);
+  const rows = S.legs.map(x => {
+    const lp = legP(x.g, x.k), c = legKalshi(x.g, x.k), v = c != null ? lp / (c + kfee(c)) - 1 : null;
+    const res = x.g.done && x.g.hg != null ? (LEGMAP[x.k][2](x.g.hg, x.g.ag) ? " ✓" : " ✗") : LIVE(x.g.st) ? " · live" : "";
+    return `<tr><td><b>${esc(legName(x.g, x.k))}</b>${res}${x === weakest && S.legs.length > 1 ? ` <span class="weak">weakest</span>` : ""}<div class="note">${esc(x.g.h)} v ${esc(x.g.a)} · ${t(x.g)}</div></td>
+      <td class="num">${pct(lp, 1)}</td><td class="num">${c != null ? Math.round(c * 100) + "¢" : "—"}</td>
+      <td class="num ${v == null ? "" : v >= 0 ? "pos" : "negv"}">${v == null ? "—" : evTxt(v)}</td><td><button class="prem" data-prem="${x.i}" aria-label="Remove leg">×</button></td></tr>`;
+  }).join("");
+  const fair = 1 / S.p, take = fair * 1.05, off = toDec(state.poffer || ""), evO = off ? S.p * off - 1 : null;
+  const verdict = off == null ? "" : evO >= 0.05 ? `<div class="verdict take"><b class="big">TAKE IT</b>${amer(off)} is ${(evO * 100).toFixed(1)}% better than fair. Still a ${pct(S.p, 1)} shot: stake small.</div>`
+    : evO >= 0 ? `<div class="verdict meh"><b class="big">BORDERLINE</b>About break-even (${(evO * 100).toFixed(1)}%). Wait for ${amer(take)} or better.</div>`
+    : `<div class="verdict skip"><b class="big">SKIP</b>${amer(off)} is ${(-evO * 100).toFixed(1)}% worse than fair. You'd need ${amer(take)} or better.</div>`;
+  const kal = S.kal != null ? `<div><small>Kalshi, buying each leg</small><b>${Math.round(S.kal * 100)}¢</b><small>${evTxt(S.p / S.kal - 1)} expected return (fees in)</small></div>`
+    : `<div><small>Kalshi</small><b>—</b><small>${S.sameGame ? "same-game legs: request a combo quote" : "not every leg is on Kalshi"}</small></div>`;
+  return `<div class="topnote" style="margin-top:0">Each leg's chance comes from the model plus the market. The parlay hits only if every leg does, and every leg carries the book's margin (2–5%), so more legs usually means a worse price. Drop the weakest or most overpriced leg first.</div>
+    <section class="league"><div class="games" style="padding:10px 12px"><div class="tw"><table class="pk2"><tr><th>Leg</th><th class="num">Chance</th><th class="num">Kalshi</th><th class="num">Leg value</th><th></th></tr>${rows}</table></div>
+    <div class="cres" style="margin-top:12px">
+      <div><small>Parlay hits about</small><b>${pct(S.p, 1)}</b><small>1 in ${(1 / S.p).toFixed(1)}</small></div>
+      <div><small>Fair odds</small><b>${amer(fair)}</b><small>${fair.toFixed(2)} decimal</small></div>
+      <div><small>Take it only at</small><b>${amer(take)}</b><small>or better (fair + 5% cushion)</small></div>
+      ${kal}
+    </div>
+    <div class="quote" style="margin-top:12px"><label>Odds the book offers <input id="poffer" inputmode="decimal" placeholder="+240 or 3.40" value="${esc(state.poffer || "")}"></label>
+      <button class="padd" data-pclear="1">Clear parlay</button></div>
+    ${verdict}</div></section>`;
+}
+function renderPbar() {
+  const b = $("pbar");
+  if (!b) return;
+  const S = parlayStats();
+  b.hidden = !S.legs.length || state.f === "parlay";
+  if (S.legs.length) b.textContent = `🧾 Parlay · ${S.legs.length} leg${S.legs.length > 1 ? "s" : ""} · ${pct(S.p, 1)} · fair ${amer(1 / S.p)}`;
+}
 function comboHtml(g) {
   if (!g.p || g.p.xh == null) return "";
   const sel = state.combo[g.id] || (state.combo[g.id] = new Set());
@@ -427,6 +511,7 @@ function detailHtml(g) {
       ${g.bb.list.map(b => `<tr><td>${esc(b[0])}</td><td class="note">${esc(b[1])} ${esc(b[2])}</td><td class="num">${pct(b[3])}</td><td class="num ${b[4] >= 0 ? "pos" : "negv"}">${evTxt(b[4])}</td><td><span class="rate ${rateCls(b[5])}">${esc(b[5])}</span></td></tr>`).join("")}</table></div>
       <div class="note">Expected return = chance × payout − 1 at that price (Kalshi: ask + fee). Value = +2% or better; Fair price = within 2% of break-even; Overpriced = worse. Not proven to beat the market; see the record below.</div></div>`);
   }
+  out.push(parlayAddHtml(g));
   out.push(comboHtml(g));
   if (g.pk) {
     const am = d => d >= 2 ? "+" + Math.round((d - 1) * 100) : "-" + Math.round(100 / (d - 1));
@@ -511,6 +596,13 @@ function detailHtml(g) {
 function render() {
   const big = new Set(D.big), q = state.q.trim().toLowerCase();
   let games = D.days[state.day] || [];
+  renderPbar();
+  if (state.f === "parlay") {
+    const S = parlayStats();
+    $("summary").innerHTML = `<span><b>${S.legs.length}</b> legs</span>${S.legs.length ? `<span>hits about <b>${pct(S.p, 1)}</b></span>` : ""}`;
+    $("board").innerHTML = parlayHtml();
+    return;
+  }
   if (state.f === "money") {
     $("summary").innerHTML = `<span><b>${(D.ev && D.ev.bets.length) || 0}</b> +EV bets</span><span><b>${(D.ev && D.ev.arbs.length) || 0}</b> arbitrage</span><span>all sports</span>`;
     $("board").innerHTML = moneyHtml();
@@ -608,6 +700,11 @@ $("board").addEventListener("input", e => {
   if (t.dataset.q) { (state.quote[t.dataset.id] = state.quote[t.dataset.id] || {})[t.dataset.q] = t.value; clearTimeout(window._qt); window._qt = setTimeout(() => { render(); const el = document.querySelector(`input[data-q="${t.dataset.q}"][data-id="${t.dataset.id}"]`); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 400); }
 });
 $("board").addEventListener("click", e => {
+  const pa = e.target.closest("[data-padd]");
+  if (pa) { const i = parlay.findIndex(x => x.id === pa.dataset.id && x.k === pa.dataset.padd); i >= 0 ? parlay.splice(i, 1) : parlay.push({ id: pa.dataset.id, k: pa.dataset.padd }); savePar(); return; }
+  const pr = e.target.closest("[data-prem]");
+  if (pr) { parlay.splice(+pr.dataset.prem, 1); savePar(); return; }
+  if (e.target.closest("[data-pclear]")) { parlay = []; state.poffer = ""; savePar(); return; }
   const oc = e.target.closest(".ccard");
   if (oc) { const id = oc.dataset.open; if (oc.dataset.combo) state.combo[id] = new Set(oc.dataset.combo.split(","));
     state.open.add(id); const g = Object.values(D.days).flat().find(x => x.id === id);
@@ -617,6 +714,12 @@ $("board").addEventListener("click", e => {
   if (c) { e.preventDefault(); state.combo[c.dataset.id] = new Set(c.dataset.combo.split(",")); render(); return; }
 });
 $("board").addEventListener("click", e => { if (e.target.closest(".combo")) return; const r = e.target.closest(".row, .betcard"); if (!r) return; const id = r.dataset.id; state.open.has(id) ? state.open.delete(id) : state.open.add(id); render(); });
+$("board").addEventListener("input", e => {
+  if (e.target.id !== "poffer") return;
+  state.poffer = e.target.value; clearTimeout(window._pt);
+  window._pt = setTimeout(() => { render(); const el = $("poffer"); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 400);
+});
+$("pbar").addEventListener("click", () => { state.f = "parlay"; document.querySelectorAll("#chips button").forEach(x => x.setAttribute("aria-pressed", x.dataset.f === "parlay")); render(); window.scrollTo(0, 0); });
 renderHead(); render(); renderRecord();
 // served live by the PC app: pick up fresh data every 5 minutes while the page is on screen
 if (/\/phone\/?$/.test(location.pathname) || location.hostname.endsWith("github.io")) {

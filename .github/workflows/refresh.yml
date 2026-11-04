@@ -53,16 +53,18 @@ jobs:
           git commit -q -m "board $(date -u +%FT%TZ)"
           for i in 1 2 3 4; do git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" gh-pages && break; echo "push failed, retrying"; sleep $((i * 15)); done
 
-      # GitHub's cron can lag for hours on new repos. While no scheduled run has happened in the last hour,
-      # wait out the interval and start the next run ourselves; once the schedule fires, this stops.
-      - name: Keep the cycle going if the scheduler is late
-        if: always() && github.event_name != 'schedule'
+      # GitHub's cron fires late and irregularly (twice in 13 hours on 2026-11-03/04). So every run starts the next one
+      # 15 minutes later unless another run is already waiting; a scheduled run that does fire just joins the queue,
+      # and only one chain survives because a run that finds another queued run stops chaining.
+      - name: Start the next refresh
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          last=$(gh run list -R "${{ github.repository }}" -w "refresh board" -e schedule -L 1 --json createdAt --jq '.[0].createdAt // ""')
-          if [ -n "$last" ] && [ $(( $(date +%s) - $(date -d "$last" +%s) )) -lt 3600 ]; then
-            echo "schedule is firing ($last); not chaining"; exit 0
-          fi
+          others() {
+            gh run list -R "${{ github.repository }}" -w "refresh board" -L 20 --json databaseId,status               --jq '[.[] | select(.databaseId != ${{ github.run_id }} and (.status == "queued" or .status == "in_progress" or .status == "waiting" or .status == "pending" or .status == "requested"))] | length'
+          }
+          if [ "$(others)" -gt 0 ]; then echo "another run is waiting; not chaining"; exit 0; fi
           sleep 900
+          if [ "$(others)" -gt 0 ]; then echo "another run started meanwhile; not chaining"; exit 0; fi
           gh workflow run refresh.yml -R "${{ github.repository }}" --ref main
